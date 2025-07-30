@@ -1,0 +1,10 @@
+# requirements.txt
+
+fastapi
+uvicorn
+groq
+pypdf
+sentence-transformers
+faiss-cpu
+numpy
+requests
