@@ -1,1 +1,114 @@
-{"metadata":{"kernelspec":{"language":"python","display_name":"Python 3","name":"python3"},"language_info":{"name":"python","version":"3.11.13","mimetype":"text/x-python","codemirror_mode":{"name":"ipython","version":3},"pygments_lexer":"ipython3","nbconvert_exporter":"python","file_extension":".py"},"kaggle":{"accelerator":"none","dataSources":[],"dockerImageVersionId":31089,"isInternetEnabled":true,"language":"python","sourceType":"script","isGpuEnabled":false}},"nbformat_minor":4,"nbformat":4,"cells":[{"cell_type":"code","source":"# %% [code] {\"execution\":{\"iopub.status.busy\":\"2025-07-31T18:42:04.011972Z\",\"iopub.execute_input\":\"2025-07-31T18:42:04.012271Z\",\"iopub.status.idle\":\"2025-07-31T18:44:31.435271Z\",\"shell.execute_reply.started\":\"2025-07-31T18:42:04.012235Z\",\"shell.execute_reply\":\"2025-07-31T18:44:31.434419Z\"}}\n# api/index.py\n!pip install -q pypdf faiss-cpu sentence-transformers groq\n\n# %% [code] {\"execution\":{\"iopub.status.busy\":\"2025-07-31T18:45:51.138855Z\",\"iopub.execute_input\":\"2025-07-31T18:45:51.140212Z\",\"iopub.status.idle\":\"2025-07-31T18:45:51.963825Z\",\"shell.execute_reply.started\":\"2025-07-31T18:45:51.140158Z\",\"shell.execute_reply\":\"2025-07-31T18:45:51.962888Z\"}}\nimport os\nimport requests\nimport numpy as np\nimport faiss\nimport groq\nfrom fastapi import FastAPI, Header, HTTPException\nfrom pydantic import BaseModel\nfrom typing import List\nfrom io import BytesIO\nfrom pypdf import PdfReader\nfrom sentence_transformers import SentenceTransformer\n\n# --- Global Objects (loaded once) ---\n# This is a key optimization for serverless functions\nprint(\"Loading Sentence Transformer model...\")\nembedding_model = SentenceTransformer('all-MiniLM-L6-v2')\nprint(\"Model loaded successfully.\")\n\n# Initialize the Groq client, getting the key from environment variables\ntry:\n    client = groq.Groq(api_key=os.getenv(\"GROQ_API_KEY\"))\n    print(\"Groq client initialized.\")\nexcept Exception as e:\n    client = None\n    print(f\"Failed to initialize Groq client: {e}\")\n\n# --- Pydantic Models for Request/Response ---\nclass HackRxRequest(BaseModel):\n    documents: str\n    questions: List[str]\n\nclass HackRxResponse(BaseModel):\n    answers: List[str]\n\n# --- Initialize FastAPI App ---\napp = FastAPI()\n\n# --- Helper Functions (logic from your notebook) ---\ndef process_document_from_url(url: str):\n    try:\n        response = requests.get(url)\n        response.raise_for_status()\n        with BytesIO(response.content) as pdf_file:\n            reader = PdfReader(pdf_file)\n            text = \"\".join(page.extract_text() or \"\" for page in reader.pages)\n        \n        chunk_size = 1500\n        chunk_overlap = 200\n        chunks = []\n        start = 0\n        while start < len(text):\n            end = start + chunk_size\n            chunks.append(text[start:end])\n            start += chunk_size - chunk_overlap\n        \n        return [chunk for chunk in chunks if chunk.strip()]\n    except Exception as e:\n        print(f\"Error processing document: {e}\")\n        return []\n\ndef create_vector_store(chunks: list):\n    if not chunks: return None\n    embeddings = embedding_model.encode(chunks, convert_to_tensor=False)\n    dimension = embeddings.shape[1]\n    index = faiss.IndexFlatL2(dimension)\n    index.add(np.array(embeddings).astype('float32'))\n    return index\n\ndef generate_answer_with_groq(question: str, context: str):\n    if not client: return \"Groq client not initialized.\"\n    prompt = f\"\"\"\n    Answer the following question based ONLY on the provided context. If the answer is not in the context, say \"Answer not found in the provided context.\"\n    CONTEXT: {context}\n    QUESTION: {question}\n    ANSWER:\n    \"\"\"\n    try:\n        chat_completion = client.chat.completions.create(\n            model=\"meta-llama/llama-4-scout-17b-16e-instruct\",\n            messages=[{\"role\": \"user\", \"content\": prompt}],\n            temperature=0.0\n        )\n        return chat_completion.choices[0].message.content.strip()\n    except Exception as e:\n        print(f\"Groq API call failed: {e}\")\n        return \"Error generating answer from Groq API.\"\n\n# --- API Endpoint ---\n@app.post(\"/hackrx/run\", response_model=HackRxResponse)\nasync def run_submission(request: HackRxRequest):\n    # This endpoint is simplified for deployment.\n    # You should add the Bearer token authentication as per the hackathon rules.\n    \n    chunks = process_document_from_url(request.documents)\n    if not chunks: raise HTTPException(status_code=500, detail=\"Failed to process document.\")\n\n    vector_index = create_vector_store(chunks)\n    if not vector_index: raise HTTPException(status_code=500, detail=\"Failed to create vector store.\")\n\n    all_answers = []\n    for question in request.questions:\n        question_embedding = embedding_model.encode([question])\n        k = 5\n        _, indices = vector_index.search(np.array(question_embedding).astype('float32'), k)\n        retrieved_context = \"\\n\\n---\\n\\n\".join([chunks[i] for i in indices[0]])\n        answer = generate_answer_with_groq(question, retrieved_context)\n        all_answers.append(answer)\n        \n    return HackRxResponse(answers=all_answers)\n\n# Optional: Add a root endpoint for simple health checks\n@app.get(\"/\")\ndef read_root():\n    return {\"status\": \"API is running\"}\n\n# %% [code]\n","metadata":{"_uuid":"d1a080f7-e637-4408-aba7-0ca6adc4300c","_cell_guid":"a75a9591-6d52-4366-86b8-59bd82cdc6c2","trusted":true,"collapsed":false,"jupyter":{"outputs_hidden":false}},"outputs":[],"execution_count":null}]}
+import os
+import requests
+import numpy as np
+import faiss
+import groq
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+from typing import List
+from io import BytesIO
+from pypdf import PdfReader
+from sentence_transformers import SentenceTransformer
+
+# --- Global Objects (loaded once) ---
+# This is a key optimization for serverless functions
+print("Loading Sentence Transformer model...")
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+print("Model loaded successfully.")
+
+# Initialize the Groq client, getting the key from environment variables
+try:
+    client = groq.Groq(api_key=os.getenv("GROQ_API_KEY"))
+    print("Groq client initialized.")
+except Exception as e:
+    client = None
+    print(f"Failed to initialize Groq client: {e}")
+
+# --- Pydantic Models for Request/Response ---
+class HackRxRequest(BaseModel):
+    documents: str
+    questions: List[str]
+
+class HackRxResponse(BaseModel):
+    answers: List[str]
+
+# --- Initialize FastAPI App ---
+app = FastAPI()
+
+# --- Helper Functions (logic from your notebook) ---
+def process_document_from_url(url: str):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        with BytesIO(response.content) as pdf_file:
+            reader = PdfReader(pdf_file)
+            text = "".join(page.extract_text() or "" for page in reader.pages)
+        
+        chunk_size = 1500
+        chunk_overlap = 200
+        chunks = []
+        start = 0
+        while start < len(text):
+            end = start + chunk_size
+            chunks.append(text[start:end])
+            start += chunk_size - chunk_overlap
+        
+        return [chunk for chunk in chunks if chunk.strip()]
+    except Exception as e:
+        print(f"Error processing document: {e}")
+        return []
+
+def create_vector_store(chunks: list):
+    if not chunks: return None
+    embeddings = embedding_model.encode(chunks, convert_to_tensor=False)
+    dimension = embeddings.shape[1]
+    index = faiss.IndexFlatL2(dimension)
+    index.add(np.array(embeddings).astype('float32'))
+    return index
+
+def generate_answer_with_groq(question: str, context: str):
+    if not client: return "Groq client not initialized."
+    prompt = f"""
+    Answer the following question based ONLY on the provided context. If the answer is not in the context, say "Answer not found in the provided context."
+    CONTEXT: {context}
+    QUESTION: {question}
+    ANSWER:
+    """
+    try:
+        chat_completion = client.chat.completions.create(
+            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
+        )
+        return chat_completion.choices[0].message.content.strip()
+    except Exception as e:
+        print(f"Groq API call failed: {e}")
+        return "Error generating answer from Groq API."
+
+# --- API Endpoint ---
+@app.post("/hackrx/run", response_model=HackRxResponse)
+async def run_submission(request: HackRxRequest):
+    # This endpoint is simplified for deployment.
+    # You should add the Bearer token authentication as per the hackathon rules.
+    
+    chunks = process_document_from_url(request.documents)
+    if not chunks: raise HTTPException(status_code=500, detail="Failed to process document.")
+
+    vector_index = create_vector_store(chunks)
+    if not vector_index: raise HTTPException(status_code=500, detail="Failed to create vector store.")
+
+    all_answers = []
+    for question in request.questions:
+        question_embedding = embedding_model.encode([question])
+        k = 5
+        _, indices = vector_index.search(np.array(question_embedding).astype('float32'), k)
+        retrieved_context = "\n\n---\n\n".join([chunks[i] for i in indices[0]])
+        answer = generate_answer_with_groq(question, retrieved_context)
+        all_answers.append(answer)
+        
+    return HackRxResponse(answers=all_answers)
+
+# Optional: Add a root endpoint for simple health checks
+@app.get("/")
+def read_root():
+    return {"status": "API is running"}
